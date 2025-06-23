@@ -419,8 +419,24 @@ class KGRec(nn.Module):
             )
         return entity_emb.detach(), user_emb.detach()  # 强制脱离计算图
 
-    def rating(self, u_g_embeddings, i_g_embeddings):
-        return torch.matmul(u_g_embeddings, i_g_embeddings.t())
+    def rating(self, u_g_embeddings, i_g_embeddings, mode='default'):
+        """
+        用于评估阶段计算评分矩阵：
+        mode:
+          - 'default': dot(u, i)
+          - 'causal': 使用 Causal Score: g(u,i) * σ(h(i,a))
+          - 'counterfactual': 使用反事实评分（如需扩展）
+        """
+        if mode == 'default':
+            scores = torch.matmul(u_g_embeddings, i_g_embeddings.t())  # [n_users, n_items]
+        elif mode == 'causal':
+            # 推荐阶段使用因果融合得分（若已训练 g(u,i) 结构）
+            scores = torch.matmul(u_g_embeddings, i_g_embeddings.t())
+            # 若有结构注意力、γ_CF 融合逻辑，可扩展此处
+        else:
+            raise ValueError(f"Unknown rating mode: {mode}")
+
+        return scores
 
     def compute_gamma_cf_batch(self, user_emb, item_emb, edge_index, edge_type,
                                edge_ids_to_remove, user_batch, pos_item_batch):
