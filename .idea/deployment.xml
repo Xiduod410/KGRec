@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.nmb2.seetacloud.com:48106 password" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.nmb2.seetacloud.com:48106 password (2)" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="root@connect.nmb2.seetacloud.com:33778 password">
         <serverdata>
@@ -20,6 +20,13 @@
         <serverdata>
           <mappings>
             <mapping deploy="/tmp/pycharm_project_653" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.nmb2.seetacloud.com:48106 password (2)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_700" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>

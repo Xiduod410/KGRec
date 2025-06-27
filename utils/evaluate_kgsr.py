@@ -15,6 +15,16 @@ device = torch.device("cuda:" + str(args.gpu_id)) if args.cuda else torch.device
 BATCH_SIZE = args.test_batch_size
 batch_test_flag = args.batch_test_flag
 
+# 添加全局变量占位符
+train_user_set = None
+test_user_set = None
+n_items = None
+# 子进程初始化函数
+def init_worker(train_us, test_us, n_items_val):
+    global train_user_set, test_user_set, n_items
+    train_user_set = train_us
+    test_user_set = test_us
+    n_items = n_items_val
 
 @torch.no_grad()
 def evaluate_model(score_matrix, dataloader, topk=[5, 10, 20, 50]):
@@ -165,8 +175,12 @@ def test(model, user_dict, n_params):
     train_user_set = user_dict['train_user_set']
     test_user_set = user_dict['test_user_set']
 
-    pool = multiprocessing.Pool(cores)
-
+    # 使用初始化函数传递全局变量
+    pool = multiprocessing.Pool(
+        cores,
+        initializer=init_worker,
+        initargs=(train_user_set, test_user_set, n_items)
+    )
     u_batch_size = BATCH_SIZE
     i_batch_size = BATCH_SIZE
 

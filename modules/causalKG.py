@@ -4,12 +4,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 from .AttnHGCN import AttnHGCN
+from .concept_contrastive import ConceptContrastiveLearning
 from .contrast import Contrast
 from logging import getLogger
 import math
 import torch.nn.functional as F
 from torch_scatter import scatter_sum, scatter_mean
 from scipy import sparse as sp
+
+from .path_reasoning import PathReasoningReconstruction
 
 
 def _adaptive_kg_drop_cl(edge_index, edge_type, edge_attn_score, keep_rate):
@@ -123,7 +126,12 @@ class KGRec(nn.Module):
         self.mess_dropout_rate = args_config.mess_dropout_rate
         self.device = torch.device("cuda:" + str(args_config.gpu_id)) if args_config.cuda \
             else torch.device("cpu")
-
+        self.gcn = AttnHGCN(channel=self.emb_size,
+                            n_hops=self.context_hops,
+                            n_users=self.n_users,
+                            n_relations=self.n_relations,
+                            node_dropout_rate=self.node_dropout_rate,
+                            mess_dropout_rate=self.mess_dropout_rate)
         self.ablation = args_config.ab
 
         self.mae_coef = args_config.mae_coef
@@ -131,7 +139,8 @@ class KGRec(nn.Module):
         self.cl_coef = args_config.cl_coef
         self.tau = args_config.cl_tau
         self.cl_drop = args_config.cl_drop_ratio
-
+        self.cl_sample_size = args_config.cl_sample_size
+        self.cl_sample_size = 4096
         self.samp_func = "torch"
 
         if args_config.dataset == 'last-fm':
@@ -174,14 +183,10 @@ class KGRec(nn.Module):
         self._init_weight()
         self.all_embed = nn.Parameter(self.all_embed)
 
-        self.gcn = AttnHGCN(channel=self.emb_size,
-                            n_hops=self.context_hops,
-                            n_users=self.n_users,
-                            n_relations=self.n_relations,
-                            node_dropout_rate=self.node_dropout_rate,
-                            mess_dropout_rate=self.mess_dropout_rate)
-        self.contrast_fn = Contrast(self.emb_size, tau=self.tau)
 
+        self.contrast_fn = Contrast(self.emb_size, tau=self.tau)
+        self.path_reconstruction = PathReasoningReconstruction(self.gcn.relation_emb, self.all_embed)
+        self.concept_contrastive = ConceptContrastiveLearning(self.all_embed[self.n_users:, :], self.gcn.relation_emb, temperature=0.1)
         # self.print_shapes()
 
     def _init_weight(self):
@@ -264,45 +269,49 @@ class KGRec(nn.Module):
         return gamma_cf_scores
 
     def forward(self, batch=None):
-        user = batch['users']
-        pos_item = batch['pos_items']
-        neg_item = batch['neg_items']
-        epoch_start = batch['batch_start'] == 0
+        # 获取当前批次的用户和物品信息
+        user = batch['users']  # 当前批次的用户索引
+        pos_item = batch['pos_items']  # 当前批次的正样本物品索引
+        neg_item = batch['neg_items']  # 当前批次的负样本物品索引
+        epoch_start = batch['batch_start'] == 0  # 判断是否是当前 epoch 的开始
 
-        user_emb = self.all_embed[:self.n_users, :]
-        item_emb = self.all_embed[self.n_users:, :]
-        # entity_gcn_emb: [n_entity, channel]
-        # user_gcn_emb: [n_users, channel]
-        """node dropout"""
-        # 1. graph sprasification;
+        # 提取用户和物品的嵌入向量
+        user_emb = self.all_embed[:self.n_users, :]  # 用户嵌入向量
+        item_emb = self.all_embed[self.n_users:, :]  # 物品嵌入向量
+
+        # 节点丢弃操作
+        # 1. 图结构稀疏化：对边进行采样以减少计算量
         edge_index, edge_type = _relation_aware_edge_sampling(
             self.edge_index, self.edge_type, self.n_relations, self.node_dropout_rate)
-        # 2. compute rationale scores;
+
+        # 2. 计算边的注意力分数（rationale scores）
         edge_attn_score, edge_attn_logits = self.gcn.norm_attn_computer(
             item_emb, edge_index, edge_type, print=epoch_start, return_logits=True)
-        # for adaptive UI MAE
+
+        # 为自适应用户-物品掩码自动编码器（UI MAE）计算物品的注意力均值
+        # 通过边的注意力分数计算物品的注意力均值
         item_attn_mean_1 = scatter_mean(edge_attn_score, edge_index[0], dim=0, dim_size=self.n_entities)
-        item_attn_mean_1[item_attn_mean_1 == 0.] = 1.
+        item_attn_mean_1[item_attn_mean_1 == 0.] = 1.  # 防止注意力均值为零
         item_attn_mean_2 = scatter_mean(edge_attn_score, edge_index[1], dim=0, dim_size=self.n_entities)
-        item_attn_mean_2[item_attn_mean_2 == 0.] = 1.
+        item_attn_mean_2[item_attn_mean_2 == 0.] = 1.  # 防止注意力均值为零
+
+        # 综合两个方向的注意力均值，得到最终的物品注意力均值
         item_attn_mean = (0.5 * item_attn_mean_1 + 0.5 * item_attn_mean_2)[:self.n_items]
-        # for adaptive MAE training
+        # 为自适应 MAE（掩码自动编码器）训练添加噪声
+        # 1. 计算边的注意力分数的标准差，用于衡量注意力分数的分布范围
         std = torch.std(edge_attn_score).detach()
+
+        # 2. 生成 Gumbel 噪声，用于增强注意力分数的随机性
+        # Gumbel 噪声的公式为 -log(-log(U))，其中 U 是一个均匀分布的随机数
         noise = -torch.log(-torch.log(torch.rand_like(edge_attn_score)))
+
+        # 3. 将生成的噪声添加到边的注意力分数中，以引入随机性
+        # 这样可以帮助模型更好地探索不同的边权重组合，提高鲁棒性
         edge_attn_score = edge_attn_score + noise
-        # 原代码：
-        #topk_v, topk_attn_edge_id = torch.topk(edge_attn_score, self.mae_msize, sorted=False)
+
         # 1. 获取结构打分 top-K
         topk_v, topk_attn_edge_id = torch.topk(edge_attn_score, self.mae_msize, sorted=False)
 
-        # 2. 计算这些边的 γ_CF
-        # gamma_cf = self.compute_edgewise_gamma_cf(
-        #     user_emb, item_emb, edge_index, edge_type,
-        #     topk_attn_edge_id, user, pos_item
-        # )
-
-        # 3. 归一化 γ_CF 到 0~1 区间
-        #gamma_cf = (gamma_cf - gamma_cf.min()) / (gamma_cf.max() - gamma_cf.min() + 1e-8)
         # 使用轻量版 γ_CF（仅跑一次 GCN，no_grad）
         gamma_cf = self.compute_gamma_cf_batch(user_emb, item_emb,
                                                edge_index, edge_type, topk_attn_edge_id,
@@ -311,76 +320,146 @@ class KGRec(nn.Module):
         # Normalize γ_CF
         gamma_cf = (gamma_cf - gamma_cf.min()) / (gamma_cf.max() - gamma_cf.min() + 1e-8)
 
-
-
-
         # 融合结构打分和 γ_CF
         alpha = 0.7
         tilde_score = alpha * topk_v + (1 - alpha) * gamma_cf
         edge_attn_score[topk_attn_edge_id] = tilde_score.detach()
+        #top_attn_edge_type = edge_type[topk_attn_edge_id]
+        # 此刻，edge_attn_score 就是融合后的分数 ω̃
+        fused_omega_scores = edge_attn_score
 
-        top_attn_edge_type = edge_type[topk_attn_edge_id]
-
+        # 使用自适应掩码方法对边进行掩码处理，生成编码图的边索引和类型，以及掩码后的边索引和类型
+        # _mae_edge_mask_adapt_mixed 函数会根据 topk_attn_edge_id 提供的边选择掩码边，并返回相关信息
         enc_edge_index, enc_edge_type, masked_edge_index, masked_edge_type, mask_bool = _mae_edge_mask_adapt_mixed(
             edge_index, edge_type, topk_attn_edge_id)
 
+        # 对交互边进行稀疏化处理，使用 _sparse_dropout 函数对边和权重进行随机丢弃操作
+        # 通过设置 self.node_dropout_rate 来控制丢弃比例，以减少计算量并增强模型的鲁棒性
         inter_edge, inter_edge_w = _sparse_dropout(
             self.inter_edge, self.inter_edge_w, self.node_dropout_rate)
 
-        # rec task
-        entity_gcn_emb, user_gcn_emb = self.gcn(user_emb,
-                                                item_emb,
-                                                enc_edge_index,
-                                                enc_edge_type,
-                                                inter_edge,
-                                                inter_edge_w,
-                                                mess_dropout=self.mess_dropout,
-                                                )
+
+        # 推荐任务（Recommendation Task）
+        # 使用 GCN（图卷积网络）对用户和物品嵌入进行更新，生成新的嵌入向量
+        entity_gcn_emb, user_gcn_emb = self.gcn(
+            user_emb,  # 用户嵌入向量
+            item_emb,  # 物品嵌入向量
+            enc_edge_index,  # 编码图的边索引
+            enc_edge_type,  # 编码图的边类型
+            inter_edge,  # 用户-物品交互边索引
+            inter_edge_w,  # 用户-物品交互边权重
+            mess_dropout=self.mess_dropout,  # 消息传递中的丢弃率
+        )
+
+        # 提取当前批次的用户嵌入向量
         u_e = user_gcn_emb[user]
+        # 提取当前批次的正样本物品和负样本物品嵌入向量
         pos_e, neg_e = entity_gcn_emb[pos_item], entity_gcn_emb[neg_item]
 
+        # 计算推荐任务的损失，包括 BPR 损失和正则化损失
         loss, rec_loss, reg_loss = self.create_bpr_loss(u_e, pos_e, neg_e)
 
-        # MAE task with dot-product decoder
-        # mask_size, 2, channel
-        node_pair_emb = entity_gcn_emb[masked_edge_index.t()]
-        # mask_size, channel
-        masked_edge_emb = self.gcn.relation_emb[masked_edge_type - 1]
-        mae_loss = self.mae_coef * \
-                   self.create_mae_loss(node_pair_emb, masked_edge_emb)
+        # 掩码自动编码器任务（MAE Task）使用点积解码器
+        # 从编码图中提取掩码边的节点对嵌入向量
+        node_pair_emb = entity_gcn_emb[masked_edge_index.t()]  # 掩码边的节点对嵌入
+        # 从编码图中提取掩码边的关系嵌入向量
+        masked_edge_emb = self.gcn.relation_emb[masked_edge_type - 1]  # 掩码边的关系嵌入
 
-        # CL task
-        """adaptive sampling"""
-        cl_kg_edge, cl_kg_type = _adaptive_kg_drop_cl(
-            edge_index, edge_type, edge_attn_score, keep_rate=1 - self.cl_drop)
-        cl_ui_edge, cl_ui_w = _adaptive_ui_drop_cl(
-            item_attn_mean, inter_edge, inter_edge_w, 1 - self.cl_drop, samp_func=self.samp_func)
+        # 计算掩码自动编码器任务的损失，并乘以系数进行加权
+        mae_loss = self.mae_coef * self.create_mae_loss(node_pair_emb, masked_edge_emb)
 
-        item_agg_ui = self.gcn.forward_ui(
-            user_emb, item_emb[:self.n_items], cl_ui_edge, cl_ui_w)
-        item_agg_kg = self.gcn.forward_kg(
-            item_emb, cl_kg_edge, cl_kg_type)[:self.n_items]
-        cl_loss = self.cl_coef * self.contrast_fn(item_agg_ui, item_agg_kg)
+        # # CL task
+        # # 自适应采样过程
+        # # 1. 对知识图谱边进行自适应丢弃，保留注意力分数较高的边。
+        # #    使用 `_adaptive_kg_drop_cl` 函数，根据边的注意力分数 `edge_attn_score` 和丢弃率 `1 - self.cl_drop` 进行采样。
+        # cl_kg_edge, cl_kg_type = _adaptive_kg_drop_cl(
+        #     edge_index, edge_type, edge_attn_score, keep_rate=1 - self.cl_drop)
+        #
+        # # 2. 对用户-物品交互边进行自适应丢弃，保留注意力分数较高的边。
+        # #    使用 `_adaptive_ui_drop_cl` 函数，根据物品的注意力均值 `item_attn_mean` 和丢弃率 `1 - self.cl_drop` 进行采样。
+        # #    `samp_func` 参数指定采样方法（如 "torch" 或 "np"）。
+        # cl_ui_edge, cl_ui_w = _adaptive_ui_drop_cl(
+        #     item_attn_mean, inter_edge, inter_edge_w, 1 - self.cl_drop, samp_func=self.samp_func)
+        #
+        # # 3. 使用 GCN（图卷积网络）对用户-物品交互边进行聚合，生成物品的嵌入表示。
+        # #    `forward_ui` 函数接收用户嵌入 `user_emb`、物品嵌入 `item_emb`、采样后的交互边 `cl_ui_edge` 和权重 `cl_ui_w`。
+        # item_agg_ui = self.gcn.forward_ui(
+        #     user_emb, item_emb[:self.n_items], cl_ui_edge, cl_ui_w)
+        #
+        # # 4. 使用 GCN 对知识图谱边进行聚合，生成物品的嵌入表示。
+        # #    `forward_kg` 函数接收物品嵌入 `item_emb`、采样后的知识图谱边 `cl_kg_edge` 和类型 `cl_kg_type`。
+        # item_agg_kg = self.gcn.forward_kg(
+        #     item_emb, cl_kg_edge, cl_kg_type)[:self.n_items]
+        #
+        # # 5. 计算对比学习损失（Contrastive Learning Loss）。
+        # #    使用 `contrast_fn` 函数对用户-物品交互边的聚合结果 `item_agg_ui` 和知识图谱边的聚合结果 `item_agg_kg` 进行对比。
+        # #    损失值乘以系数 `self.cl_coef` 进行加权。
+        # cl_loss = self.cl_coef * self.contrast_fn(item_agg_ui, item_agg_kg)
 
-        # 再次用原图删除 TopK edge 构建 counterfactual 图
-        edge_index_cf = edge_index.clone()
-        edge_type_cf = edge_type.clone()
-        cf_mask = torch.ones(edge_index_cf.shape[1], dtype=torch.bool, device=edge_index_cf.device)
-        cf_mask[topk_attn_edge_id] = False
-        edge_index_cf = edge_index_cf[:, cf_mask]
-        edge_type_cf = edge_type_cf[cf_mask]
+        # # 再次用原始图删除 TopK 边以构建反事实图（Counterfactual Graph）
+        # # 1. 克隆当前的边索引和边类型，以便进行修改
+        # edge_index_cf = edge_index.clone()
+        # edge_type_cf = edge_type.clone()
+        #
+        # # 2. 创建一个布尔掩码，用于标记需要删除的边
+        # #    初始掩码设置为全 True，表示所有边都保留
+        # cf_mask = torch.ones(edge_index_cf.shape[1], dtype=torch.bool, device=edge_index_cf.device)
+        #
+        # # 3. 根据 TopK 边的索引，将对应的掩码设置为 False，表示这些边将被删除
+        # cf_mask[topk_attn_edge_id] = False
+        #
+        # # 4. 使用掩码过滤边索引和边类型，生成反事实图的边索引和边类型
+        # edge_index_cf = edge_index_cf[:, cf_mask]
+        # edge_type_cf = edge_type_cf[cf_mask]
+        #
+        # # 对比物品的嵌入表示
+        # # 1. 在反事实图上运行知识图谱聚合（forward_kg），生成物品的嵌入表示
+        # item_agg_kg_cf = self.gcn.forward_kg(item_emb, edge_index_cf, edge_type_cf)[:self.n_items]
+        #
+        # # 2. 计算对比学习损失（Contrastive Learning Loss）
+        # #    使用原始图的物品嵌入表示（item_agg_kg）和反事实图的物品嵌入表示（item_agg_kg_cf）进行对比
+        # #    损失值乘以系数 self.cl_coef 进行加权
+        # cf_cl_loss = self.cl_coef * self.contrast_fn(item_agg_kg, item_agg_kg_cf)
 
-        # 对比 item 表示
-        item_agg_kg_cf = self.gcn.forward_kg(item_emb, edge_index_cf, edge_type_cf)[:self.n_items]
-        cf_cl_loss = self.cl_coef * self.contrast_fn(item_agg_kg, item_agg_kg_cf)
+        # # Path Reasoning Reconstruction
+        # # 使用在当前batch中采样的边(edge_index, edge_type)和计算出的融合分数
+        # sampled_edges, sampled_types = self.path_reconstruction.sample_high_quality_paths(
+        #     edge_index,
+        #     edge_type,
+        #     omega_scores=fused_omega_scores)
+        # if sampled_edges.shape[1] > 0:  # 确保有路径被采样
+        #     masked_edges, masked_types, mask_idx = self.path_reconstruction.mask_path(sampled_edges, sampled_types)
+        #     path_loss = self.path_reconstruction.reconstruct_loss(masked_edges, masked_types, sampled_edges,
+        #                                                           sampled_types)
+        # else:
+        #     path_loss = torch.tensor(0.0, device=loss.device)
+
+        # Concept-level Contrastive Learning
+        # 使用在当前batch中采样的边(edge_index, edge_type)和计算出的融合分数
+        important_edges, important_types = self.concept_contrastive.identify_important_concepts(
+            edge_index,
+            edge_type,
+            omega_scores=fused_omega_scores,
+            threshold=0.5)  # 可以将threshold也设为超参数
+
+        # 传入采样数量
+        positive_pairs, negative_pairs = self.concept_contrastive.construct_samples(
+            important_edges,
+            important_types,
+            num_samples=self.cl_sample_size)  # 使用超参数
+
+        concept_loss = self.concept_contrastive.contrastive_loss(positive_pairs, negative_pairs)
+
 
         loss_dict = {
             "rec_loss": loss.item(),
             "mae_loss": mae_loss.item(),
-            "cl_loss": cl_loss.item(),
-            "cf_cl_loss": cf_cl_loss.item()
+            # "cl_loss": cl_loss.item(),
+            # "cf_cl_loss": cf_cl_loss.item(),
+            # "path_loss": path_loss.item(),
+            "concept_loss": concept_loss.item()
         }
-        return loss + mae_loss + cl_loss + cf_cl_loss, loss_dict
+        return loss + mae_loss + concept_loss, loss_dict
 
     def calc_topk_attn_edge(self, entity_emb, edge_index, edge_type, k):
         edge_attn_score = self.gcn.norm_attn_computer(

@@ -23,7 +23,7 @@ def parse_args_kgsr():
     parser.add_argument('--cl_coef', type=float, default=0.01, help='coefficient for CL loss')
     parser.add_argument('--cl_tau', type=float, default=1.0, help='temperature for CL')
     parser.add_argument('--cl_drop_ratio', type=float, default=0.5, help='drop ratio for CL')
-
+    parser.add_argument('--cl_sample_size', type=int, default=4096,help='Number of samples for concept-level contrastive learning.')
     # ===== train ===== #
     parser.add_argument('--epoch', type=int, default=1000, help='number of epochs')
     parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
@@ -48,7 +48,7 @@ def parse_args_kgsr():
     parser.add_argument('--context_hops', type=int, default=2, help='number of context hops')
     # ===== save model ===== #
     parser.add_argument("--save", action='store_true', default=False, help="save model or not")
-    parser.add_argument("--out_dir", type=str, default="./weights/", help="output directory for model")
+    parser.add_argument("--out_dir", type=str, default="./weight/", help="output directory for model")
 
     return parser.parse_args()
 
