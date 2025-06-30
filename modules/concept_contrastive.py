@@ -91,8 +91,15 @@ class ConceptContrastiveLearning:
         5. 创建标签（labels），所有标签均为
         6. 使用交叉熵损失函数计算最终的对比损失。
         """
-        if not pos_pairs or not neg_pairs:
-            return torch.tensor(0.0, device=self.entity_emb.device)
+        device_to_use = self.entity_emb.device
+
+        if len(pos_pairs) == 0 or len(neg_pairs) == 0:
+            return torch.tensor(0.0, device=device_to_use)
+
+        # 确保两边样本数量一致（使用最小长度）
+        n_samples = min(len(pos_pairs), len(neg_pairs))
+        positive_pairs = pos_pairs[:n_samples]
+        negative_pairs = neg_pairs[:n_samples]
 
         anchors = torch.stack([self.entity_emb[p[0][1]].detach() for p in pos_pairs])  # [B, d]
         positives = torch.stack([self.entity_emb[p[1][1]].detach() for p in pos_pairs])

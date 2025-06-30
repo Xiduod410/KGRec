@@ -105,7 +105,7 @@ if __name__ == '__main__':
         """define optimizer"""
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-        test_interval = 10 if args.dataset == 'last-fm' else 1
+        test_interval = 5 if args.dataset == 'last-fm' else 1
         early_stop_step = 5 if args.dataset == 'last-fm' else 10
 
         cur_best_pre_0 = 0
