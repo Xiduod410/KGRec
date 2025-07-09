@@ -43,7 +43,9 @@ def parse_args_kgsr():
     parser.add_argument('--Ks', nargs='?', default='[20]', help='Output sizes of every layer')
     parser.add_argument('--test_flag', nargs='?', default='part',
                         help='Specify the test type from {part, full}, indicating whether the reference is done in mini-batch')
-
+    # 添加意图对比学习的参数
+    parser.add_argument('--intent_cl_coef', type=float, default=0.1, help='Coefficient for the intent-disentangled contrastive loss.')
+    parser.add_argument('--intent_cl_tau', type=float, default=0.2, help='Temperature parameter for the intent-disentangled contrastive loss.')
     # ===== relation context ===== #
     parser.add_argument('--context_hops', type=int, default=2, help='number of context hops')
     # ===== save model ===== #

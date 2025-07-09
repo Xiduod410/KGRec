@@ -15,10 +15,10 @@ class ConceptContrastiveLearning:
         important_types = edge_type[important_indices]
         return important_edges, important_types
 
-    def construct_samples(self, important_edges, important_types, num_samples=4096, max_pairs=5000):
+    # 在 class ConceptContrastiveLearning 中
+    def construct_samples(self, important_edges, important_types, num_samples=4096):
         """
-        构造正负样本对，每个正对对应相同关系下不同实体，负对来自不同关系。
-        限制最大正负样本对数量为 max_pairs。
+        构造正负样本对，对每个正样本对都匹配一个负样本，保证数量一致。
         """
         n_important = important_edges.shape[1]
         if n_important < 2:
@@ -32,38 +32,46 @@ class ConceptContrastiveLearning:
         for idx, r_type in enumerate(important_types.tolist()):
             type_to_indices.setdefault(r_type, []).append(idx)
 
+        # 过滤掉无法形成正样本对的关系类型
+        valid_types_for_pos = {t: idxs for t, idxs in type_to_indices.items() if len(idxs) > 1}
         unique_types = list(type_to_indices.keys())
-        if len(unique_types) < 2:
+
+        if not valid_types_for_pos or len(unique_types) < 2:
             return [], []
 
         # 2. 采样样本对
-        for _ in range(num_samples):
-            anchor_idx = random.randint(0, n_important - 1)
-            anchor_edge = important_edges[:, anchor_idx]
-            anchor_type = important_types[anchor_idx].item()
+        # 尝试采样 num_samples 次，直到收集到足够的样本或尝试次数用尽
+        attempts = 0
+        max_attempts = num_samples * 2  # 防止无限循环
 
-            # 正样本
-            positive_pool = type_to_indices[anchor_type]
-            if len(positive_pool) > 1:
+        while len(positive_pairs) < num_samples and attempts < max_attempts:
+            attempts += 1
+            try:
+                # Step A: 采样一个正样本对
+                # 随机选择一个可以形成正样本对的关系类型
+                anchor_type = random.choice(list(valid_types_for_pos.keys()))
+                # 从中随机选择两个不同的边作为 anchor 和 positive
+                anchor_idx, positive_idx = random.sample(valid_types_for_pos[anchor_type], 2)
+                anchor_edge = important_edges[:, anchor_idx]
+                positive_edge = important_edges[:, positive_idx]
+
+                # Step B: 为这个 anchor 采样一个负样本
+                # 随机选择一个不同的关系类型
                 while True:
-                    positive_idx = random.choice(positive_pool)
-                    if positive_idx != anchor_idx:
+                    negative_type = random.choice(unique_types)
+                    if negative_type != anchor_type:
                         break
 
-                positive_edge = important_edges[:, positive_idx]
-                positive_pairs.append((anchor_edge, positive_edge))
-
-            # 负样本
-            other_types = [t for t in unique_types if t != anchor_type]
-            if other_types:
-                negative_type = random.choice(other_types)
                 negative_idx = random.choice(type_to_indices[negative_type])
                 negative_edge = important_edges[:, negative_idx]
+
+                # Step C: 添加到列表中
+                positive_pairs.append((anchor_edge, positive_edge))
+                # 负样本对的 anchor 与正样本对的 anchor 保持一致
                 negative_pairs.append((anchor_edge, negative_edge))
 
-        # 3. 限制样本数
-        positive_pairs = random.sample(positive_pairs, min(len(positive_pairs), max_pairs))
-        negative_pairs = random.sample(negative_pairs, min(len(negative_pairs), max_pairs))
+            except (ValueError, IndexError):
+                continue
 
         return positive_pairs, negative_pairs
 

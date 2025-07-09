@@ -162,14 +162,13 @@ class KGRec(nn.Module):
             self.cl_coef = 0.001
             self.tau = 0.2
             self.cl_drop = 0.5
-        elif args_config.dataset == 'movielens':
+        elif args_config.dataset == 'ml-1m':
             self.mae_coef = 0.1
             self.mae_msize = 256
             self.cl_coef = 0.01
             self.tau = 0.1
             self.cl_drop = 0.5
             self.samp_func = "torch"
-
         # update hps
         if hp_dict is not None:
             for k, v in hp_dict.items():
@@ -187,7 +186,6 @@ class KGRec(nn.Module):
         self.contrast_fn = Contrast(self.emb_size, tau=self.tau)
         self.path_reconstruction = PathReasoningReconstruction(self.gcn.relation_emb, self.all_embed)
         self.concept_contrastive = ConceptContrastiveLearning(self.all_embed[self.n_users:, :], self.gcn.relation_emb, temperature=0.1)
-        # self.print_shapes()
 
     def _init_weight(self):
         initializer = nn.init.xavier_uniform_
@@ -396,43 +394,6 @@ class KGRec(nn.Module):
         # #    损失值乘以系数 `self.cl_coef` 进行加权。
         # cl_loss = self.cl_coef * self.contrast_fn(item_agg_ui, item_agg_kg)
 
-        # # 再次用原始图删除 TopK 边以构建反事实图（Counterfactual Graph）
-        # # 1. 克隆当前的边索引和边类型，以便进行修改
-        # edge_index_cf = edge_index.clone()
-        # edge_type_cf = edge_type.clone()
-        #
-        # # 2. 创建一个布尔掩码，用于标记需要删除的边
-        # #    初始掩码设置为全 True，表示所有边都保留
-        # cf_mask = torch.ones(edge_index_cf.shape[1], dtype=torch.bool, device=edge_index_cf.device)
-        #
-        # # 3. 根据 TopK 边的索引，将对应的掩码设置为 False，表示这些边将被删除
-        # cf_mask[topk_attn_edge_id] = False
-        #
-        # # 4. 使用掩码过滤边索引和边类型，生成反事实图的边索引和边类型
-        # edge_index_cf = edge_index_cf[:, cf_mask]
-        # edge_type_cf = edge_type_cf[cf_mask]
-        #
-        # # 对比物品的嵌入表示
-        # # 1. 在反事实图上运行知识图谱聚合（forward_kg），生成物品的嵌入表示
-        # item_agg_kg_cf = self.gcn.forward_kg(item_emb, edge_index_cf, edge_type_cf)[:self.n_items]
-        #
-        # # 2. 计算对比学习损失（Contrastive Learning Loss）
-        # #    使用原始图的物品嵌入表示（item_agg_kg）和反事实图的物品嵌入表示（item_agg_kg_cf）进行对比
-        # #    损失值乘以系数 self.cl_coef 进行加权
-        # cf_cl_loss = self.cl_coef * self.contrast_fn(item_agg_kg, item_agg_kg_cf)
-
-        # # Path Reasoning Reconstruction
-        # # 使用在当前batch中采样的边(edge_index, edge_type)和计算出的融合分数
-        # sampled_edges, sampled_types = self.path_reconstruction.sample_high_quality_paths(
-        #     edge_index,
-        #     edge_type,
-        #     omega_scores=fused_omega_scores)
-        # if sampled_edges.shape[1] > 0:  # 确保有路径被采样
-        #     masked_edges, masked_types, mask_idx = self.path_reconstruction.mask_path(sampled_edges, sampled_types)
-        #     path_loss = self.path_reconstruction.reconstruct_loss(masked_edges, masked_types, sampled_edges,
-        #                                                           sampled_types)
-        # else:
-        #     path_loss = torch.tensor(0.0, device=loss.device)
 
         # Concept-level Contrastive Learning
         # 使用在当前batch中采样的边(edge_index, edge_type)和计算出的融合分数
@@ -456,10 +417,9 @@ class KGRec(nn.Module):
             "mae_loss": mae_loss.item(),
             # "cl_loss": cl_loss.item(),
             # "cf_cl_loss": cf_cl_loss.item(),
-            # "path_loss": path_loss.item(),
             "concept_loss": concept_loss.item()
         }
-        return loss + mae_loss + concept_loss, loss_dict
+        return loss + mae_loss + concept_loss  , loss_dict
 
     def calc_topk_attn_edge(self, entity_emb, edge_index, edge_type, k):
         edge_attn_score = self.gcn.norm_attn_computer(
