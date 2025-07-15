@@ -301,8 +301,14 @@ class KGRec(nn.Module):
                         self.inter_edge_w,
                         mess_dropout=False)[:2]
 
-    def rating(self, u_g_embeddings, i_g_embeddings):
-        return torch.matmul(u_g_embeddings, i_g_embeddings.t())
+    def rating(self, u_g_embeddings, i_g_embeddings, mode='default'):
+        if mode == 'default':
+            return torch.matmul(u_g_embeddings, i_g_embeddings.t())
+        elif mode == 'causal':
+            # 没有因果机制的基线返回默认（兼容 test）
+            return torch.matmul(u_g_embeddings, i_g_embeddings.t())
+        else:
+            raise ValueError(f"Unknown rating mode: {mode}")
 
     # @TimeCounter.count_time(warmup_interval=4)
     def create_bpr_loss(self, users, pos_items, neg_items):

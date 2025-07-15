@@ -9,7 +9,7 @@ def parse_args_kgsr():
     parser.add_argument('--log_fn', type=str, default=None, help='log file_name')
 
     # ===== dataset ===== #
-    parser.add_argument("--dataset", nargs="?", default="ml-1m", help="Choose a dataset:[last-fm,mind-f,ml-1m,alibaba]")
+    parser.add_argument("--dataset", nargs="?", default="last-fm", help="Choose a dataset:[last-fm,mind-f,ml-1m,alibaba]")
     parser.add_argument(
         "--data_path", nargs="?", default="data/", help="Input data path."
     )
@@ -30,7 +30,7 @@ def parse_args_kgsr():
     parser.add_argument('--test_batch_size', type=int, default=1024, help='batch size')
     parser.add_argument('--dim', type=int, default=64, help='embedding size')
     parser.add_argument('--l2', type=float, default=1e-5, help='l2 regularization weight')
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--lr', type=float, default=0.01, help='learning rate')
     parser.add_argument("--inverse_r", type=bool, default=True, help="consider inverse relation or not")
     parser.add_argument("--node_dropout", type=int, default=1, help="consider node dropout or not")
     parser.add_argument("--node_dropout_rate", type=float, default=0.5, help="ratio of node dropout")
