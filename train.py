@@ -9,7 +9,6 @@ from prettytable import PrettyTable
 import datetime
 from utils.parser import parse_args_kgsr
 from utils.data_loader import load_data
-from modules.testKGRec import TestKGRec  # ✅ 使用加入因果推理的模型类
 from utils.evaluate_kgsr import test
 from utils.helper import early_stopping, init_logger
 from logging import getLogger

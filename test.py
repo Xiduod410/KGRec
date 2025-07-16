@@ -73,7 +73,7 @@ def run_model_variant(model_class, model_name, n_params, args, graph, mean_mat, 
     model.eval()
     with torch.no_grad():
         print(f"\n🔍 测试模型: {model_name}")
-        ret = test(model, user_dict, n_params, show_progress=True)
+        ret = test(model, user_dict, n_params)  # 删除了 'pbar' 参数传入
 
     print(f"\n✅ 模型: {model_name}")
     print(f"Recall@20: {ret['recall'][0]:.4f}  NDCG@20: {ret['ndcg'][0]:.4f}  Hit@20: {ret['hit_ratio'][0]:.4f}\n")

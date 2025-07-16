@@ -1,8 +1,8 @@
 import torch
 import numpy as np
-from modules import testKGRec
+from modules import KGRecwith
 from modules.KGRec import KGRec
-from modules.testKGRec import TestKGRec
+from modules.KGRecwith import TestKGRec
 from utils.data_loader_kgcl import load_data
 from utils.evaluate_kgsr import evaluate_model
 import matplotlib.pyplot as plt
