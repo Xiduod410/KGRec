@@ -23,14 +23,16 @@ def parse_args_kgsr():
     parser.add_argument('--cl_coef', type=float, default=0.01, help='coefficient for CL loss')
     parser.add_argument('--cl_tau', type=float, default=1.0, help='temperature for CL')
     parser.add_argument('--cl_drop_ratio', type=float, default=0.5, help='drop ratio for CL')
-    parser.add_argument('--cl_sample_size', type=int, default=4096,help='Number of samples for concept-level contrastive learning.')
+    parser.add_argument('--concept_cl_coef', type=float, default=0.01, help='coefficient for Concept CL loss')
+
+    #parser.add_argument('--cl_sample_size', type=int, default=4096,help='Number of samples for concept-level contrastive learning.')
     # ===== train ===== #
     parser.add_argument('--epoch', type=int, default=1000, help='number of epochs')
     parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
     parser.add_argument('--test_batch_size', type=int, default=1024, help='batch size')
     parser.add_argument('--dim', type=int, default=64, help='embedding size')
     parser.add_argument('--l2', type=float, default=1e-5, help='l2 regularization weight')
-    parser.add_argument('--lr', type=float, default=0.01, help='learning rate')
+    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument("--inverse_r", type=bool, default=True, help="consider inverse relation or not")
     parser.add_argument("--node_dropout", type=int, default=1, help="consider node dropout or not")
     parser.add_argument("--node_dropout_rate", type=float, default=0.5, help="ratio of node dropout")
@@ -43,10 +45,7 @@ def parse_args_kgsr():
     parser.add_argument('--Ks', nargs='?', default='[20]', help='Output sizes of every layer')
     parser.add_argument('--test_flag', nargs='?', default='part',
                         help='Specify the test type from {part, full}, indicating whether the reference is done in mini-batch')
-    # 添加意图对比学习的参数
-    parser.add_argument('--intent_cl_coef', type=float, default=0.1, help='Coefficient for the intent-disentangled contrastive loss.')
-    parser.add_argument('--intent_cl_tau', type=float, default=0.2, help='Temperature parameter for the intent-disentangled contrastive loss.')
-    # ===== relation context ===== #
+       # ===== relation context ===== #
     parser.add_argument('--context_hops', type=int, default=2, help='number of context hops')
     # ===== save model ===== #
     parser.add_argument("--save", action='store_true', default=False, help="save model or not")

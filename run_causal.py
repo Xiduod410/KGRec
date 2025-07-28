@@ -103,7 +103,7 @@ if __name__ == '__main__':
         model = model(n_params, args, graph, mean_mat_list[0]).to(device)
         model.print_shapes()
         """define optimizer"""
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
 
         test_interval = 5 if args.dataset == 'last-fm' else 1
         early_stop_step = 5 if args.dataset == 'last-fm' else 10

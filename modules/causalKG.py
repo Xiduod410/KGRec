@@ -139,10 +139,10 @@ class KGRec(nn.Module):
         self.cl_coef = args_config.cl_coef
         self.tau = args_config.cl_tau
         self.cl_drop = args_config.cl_drop_ratio
-        self.cl_sample_size = args_config.cl_sample_size
+
         self.cl_sample_size = 4096
         self.samp_func = "torch"
-
+        self.concept_cl_coef = args_config.concept_cl_coef
         if args_config.dataset == 'last-fm':
             self.mae_coef = 0.1
             self.mae_msize = 256
@@ -185,7 +185,7 @@ class KGRec(nn.Module):
 
         self.contrast_fn = Contrast(self.emb_size, tau=self.tau)
         self.path_reconstruction = PathReasoningReconstruction(self.gcn.relation_emb, self.all_embed)
-        self.concept_contrastive = ConceptContrastiveLearning(self.all_embed[self.n_users:, :], self.gcn.relation_emb, temperature=0.1)
+        self.concept_contrastive = ConceptContrastiveLearning(self.all_embed[self.n_users:, :], self.gcn.relation_emb, temperature=0.5)
 
     def _init_weight(self):
         initializer = nn.init.xavier_uniform_
@@ -366,60 +366,60 @@ class KGRec(nn.Module):
         # 计算掩码自动编码器任务的损失，并乘以系数进行加权
         mae_loss = self.mae_coef * self.create_mae_loss(node_pair_emb, masked_edge_emb)
 
-        # # CL task
-        # # 自适应采样过程
-        # # 1. 对知识图谱边进行自适应丢弃，保留注意力分数较高的边。
-        # #    使用 `_adaptive_kg_drop_cl` 函数，根据边的注意力分数 `edge_attn_score` 和丢弃率 `1 - self.cl_drop` 进行采样。
-        # cl_kg_edge, cl_kg_type = _adaptive_kg_drop_cl(
-        #     edge_index, edge_type, edge_attn_score, keep_rate=1 - self.cl_drop)
+        # CL task
+        # 自适应采样过程
+        # 1. 对知识图谱边进行自适应丢弃，保留注意力分数较高的边。
+        #    使用 `_adaptive_kg_drop_cl` 函数，根据边的注意力分数 `edge_attn_score` 和丢弃率 `1 - self.cl_drop` 进行采样。
+        cl_kg_edge, cl_kg_type = _adaptive_kg_drop_cl(
+            edge_index, edge_type, edge_attn_score, keep_rate=1 - self.cl_drop)
+
+        # 2. 对用户-物品交互边进行自适应丢弃，保留注意力分数较高的边。
+        #    使用 `_adaptive_ui_drop_cl` 函数，根据物品的注意力均值 `item_attn_mean` 和丢弃率 `1 - self.cl_drop` 进行采样。
+        #    `samp_func` 参数指定采样方法（如 "torch" 或 "np"）。
+        cl_ui_edge, cl_ui_w = _adaptive_ui_drop_cl(
+            item_attn_mean, inter_edge, inter_edge_w, 1 - self.cl_drop, samp_func=self.samp_func)
+
+        # 3. 使用 GCN（图卷积网络）对用户-物品交互边进行聚合，生成物品的嵌入表示。
+        #    `forward_ui` 函数接收用户嵌入 `user_emb`、物品嵌入 `item_emb`、采样后的交互边 `cl_ui_edge` 和权重 `cl_ui_w`。
+        item_agg_ui = self.gcn.forward_ui(
+            user_emb, item_emb[:self.n_items], cl_ui_edge, cl_ui_w)
+
+        # 4. 使用 GCN 对知识图谱边进行聚合，生成物品的嵌入表示。
+        #    `forward_kg` 函数接收物品嵌入 `item_emb`、采样后的知识图谱边 `cl_kg_edge` 和类型 `cl_kg_type`。
+        item_agg_kg = self.gcn.forward_kg(
+            item_emb, cl_kg_edge, cl_kg_type)[:self.n_items]
+
+        # 5. 计算对比学习损失（Contrastive Learning Loss）。
+        #    使用 `contrast_fn` 函数对用户-物品交互边的聚合结果 `item_agg_ui` 和知识图谱边的聚合结果 `item_agg_kg` 进行对比。
+        #    损失值乘以系数 `self.cl_coef` 进行加权。
+        cl_loss = self.cl_coef * self.contrast_fn(item_agg_ui, item_agg_kg)
+
+
+        # # Concept-level Contrastive Learning
+        # # 使用在当前batch中采样的边(edge_index, edge_type)和计算出的融合分数
+        # important_edges, important_types = self.concept_contrastive.identify_important_concepts(
+        #     edge_index,
+        #     edge_type,
+        #     omega_scores=fused_omega_scores,
+        #     threshold=0.5)  # 可以将threshold也设为超参数
         #
-        # # 2. 对用户-物品交互边进行自适应丢弃，保留注意力分数较高的边。
-        # #    使用 `_adaptive_ui_drop_cl` 函数，根据物品的注意力均值 `item_attn_mean` 和丢弃率 `1 - self.cl_drop` 进行采样。
-        # #    `samp_func` 参数指定采样方法（如 "torch" 或 "np"）。
-        # cl_ui_edge, cl_ui_w = _adaptive_ui_drop_cl(
-        #     item_attn_mean, inter_edge, inter_edge_w, 1 - self.cl_drop, samp_func=self.samp_func)
+        # # 传入采样数量
+        # positive_pairs, negative_pairs = self.concept_contrastive.construct_samples(
+        #     important_edges,
+        #     important_types,
+        #     num_samples=self.cl_sample_size)  # 使用超参数
         #
-        # # 3. 使用 GCN（图卷积网络）对用户-物品交互边进行聚合，生成物品的嵌入表示。
-        # #    `forward_ui` 函数接收用户嵌入 `user_emb`、物品嵌入 `item_emb`、采样后的交互边 `cl_ui_edge` 和权重 `cl_ui_w`。
-        # item_agg_ui = self.gcn.forward_ui(
-        #     user_emb, item_emb[:self.n_items], cl_ui_edge, cl_ui_w)
+        # concept_loss =self.concept_cl_coef *  self.concept_contrastive.contrastive_loss(positive_pairs, negative_pairs)
         #
-        # # 4. 使用 GCN 对知识图谱边进行聚合，生成物品的嵌入表示。
-        # #    `forward_kg` 函数接收物品嵌入 `item_emb`、采样后的知识图谱边 `cl_kg_edge` 和类型 `cl_kg_type`。
-        # item_agg_kg = self.gcn.forward_kg(
-        #     item_emb, cl_kg_edge, cl_kg_type)[:self.n_items]
-        #
-        # # 5. 计算对比学习损失（Contrastive Learning Loss）。
-        # #    使用 `contrast_fn` 函数对用户-物品交互边的聚合结果 `item_agg_ui` 和知识图谱边的聚合结果 `item_agg_kg` 进行对比。
-        # #    损失值乘以系数 `self.cl_coef` 进行加权。
-        # cl_loss = self.cl_coef * self.contrast_fn(item_agg_ui, item_agg_kg)
-
-
-        # Concept-level Contrastive Learning
-        # 使用在当前batch中采样的边(edge_index, edge_type)和计算出的融合分数
-        important_edges, important_types = self.concept_contrastive.identify_important_concepts(
-            edge_index,
-            edge_type,
-            omega_scores=fused_omega_scores,
-            threshold=0.5)  # 可以将threshold也设为超参数
-
-        # 传入采样数量
-        positive_pairs, negative_pairs = self.concept_contrastive.construct_samples(
-            important_edges,
-            important_types,
-            num_samples=self.cl_sample_size)  # 使用超参数
-
-        concept_loss = self.concept_contrastive.contrastive_loss(positive_pairs, negative_pairs)
-
 
         loss_dict = {
             "rec_loss": loss.item(),
             "mae_loss": mae_loss.item(),
-            # "cl_loss": cl_loss.item(),
+             "cl_loss": cl_loss.item(),
             # "cf_cl_loss": cf_cl_loss.item(),
-            "concept_loss": concept_loss.item()
+            #"concept_loss": concept_loss.item()
         }
-        return loss + mae_loss + concept_loss  , loss_dict
+        return loss + mae_loss +cl_loss , loss_dict
 
     def calc_topk_attn_edge(self, entity_emb, edge_index, edge_type, k):
         edge_attn_score = self.gcn.norm_attn_computer(
